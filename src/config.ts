@@ -18,4 +18,12 @@ password: process.env.MYSQL_PASSWORD || "",
 database: process.env.MYSQL_DATABASE || "smokeeat",
 useSSL: (process.env.MYSQL_USE_SSL || "false").toLowerCase() === "true",
 },
+ smtp: {
+    host: process.env.SMTP_HOST || '',
+    port: Number(process.env.SMTP_PORT || 587),
+    secure: /^(true|1)$/i.test(process.env.SMTP_SECURE || ''),
+    user: process.env.SMTP_USER || '',
+    pass: process.env.SMTP_PASS || '',
+    from: process.env.MAIL_FROM || 'Smoke Eat Burger <no-reply@example.com>',
+  },
 };
