@@ -1,0 +1,62 @@
+CREATE TABLE IF NOT EXISTS users (
+id CHAR(36) NOT NULL PRIMARY KEY,
+email VARCHAR(191) NOT NULL UNIQUE,
+password_hash VARCHAR(191) NOT NULL,
+role ENUM('USER','ADMIN') NOT NULL DEFAULT 'USER',
+points INT NOT NULL DEFAULT 0,
+spend_remainder INT NOT NULL DEFAULT 0,
+referral_code VARCHAR(32) NOT NULL UNIQUE,
+referred_by_id CHAR(36) NULL,
+first_purchase_at DATETIME NULL,
+created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+CONSTRAINT fk_users_referred_by FOREIGN KEY (referred_by_id) REFERENCES users(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+CREATE TABLE IF NOT EXISTS orders (
+id CHAR(36) NOT NULL PRIMARY KEY,
+user_id CHAR(36) NOT NULL,
+amount_ars INT NOT NULL,
+points_added INT NOT NULL DEFAULT 0,
+created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+INDEX idx_orders_user (user_id),
+CONSTRAINT fk_orders_user FOREIGN KEY (user_id) REFERENCES users(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+CREATE TABLE IF NOT EXISTS reward_tiers (
+id CHAR(36) NOT NULL PRIMARY KEY,
+code VARCHAR(64) NOT NULL UNIQUE,
+name VARCHAR(191) NOT NULL,
+description TEXT,
+cost_points INT NOT NULL,
+priority INT NOT NULL,
+INDEX idx_reward_priority (priority)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+CREATE TABLE IF NOT EXISTS redemptions (
+id CHAR(36) NOT NULL PRIMARY KEY,
+user_id CHAR(36) NOT NULL,
+tier_id CHAR(36) NOT NULL,
+status ENUM('PENDING','USED','CANCELLED') NOT NULL DEFAULT 'PENDING',
+notes TEXT NULL,
+created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+INDEX idx_redemptions_user (user_id),
+INDEX idx_redemptions_tier (tier_id),
+CONSTRAINT fk_redemptions_user FOREIGN KEY (user_id) REFERENCES users(id),
+CONSTRAINT fk_redemptions_tier FOREIGN KEY (tier_id) REFERENCES reward_tiers(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+CREATE TABLE IF NOT EXISTS password_reset_tokens (
+id CHAR(36) NOT NULL PRIMARY KEY,
+user_id CHAR(36) NOT NULL,
+token VARCHAR(191) NOT NULL UNIQUE,
+expires_at DATETIME NOT NULL,
+used_at DATETIME NULL,
+created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+INDEX idx_reset_user (user_id),
+CONSTRAINT fk_reset_user FOREIGN KEY (user_id) REFERENCES users(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
