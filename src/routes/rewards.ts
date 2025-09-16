@@ -9,8 +9,125 @@ const POINTS_PER_10K = Number(process.env.POINTS_PER_10K || 100);
 const REFERRAL_BONUS = Number(process.env.REFERRAL_BONUS || 50);
 
 // Catálogo mínimo para el test
-type Reward = { code: string; name: string; cost: number };
-const REWARDS: Reward[] = [{ code: "ANY_COMBO_PLUS_SIDE", name: "Combo + Guarnición", cost: 2000 }];
+type Reward = { code: string; name: string; cost: number; description?: string; meta?: any };
+
+export const REWARDS: Reward[] = [
+  /* ====== SIDES ====== */
+  {
+    code: "SIDE_BASIC",
+    name: "Guarnición básica",
+    cost: 800,
+    description: "Elegí Papas clásicas o Papas chips.",
+    meta: {
+      type: "side",
+      allowedIds: ["papas-clasicas", "papas-chips"],
+    },
+  },
+  {
+    code: "SIDE_PREMIUM",
+    name: "Guarnición premium",
+    cost: 1200,
+    description: "Papas con cheddar o Nuggets x6.",
+    meta: {
+      type: "side",
+      allowedIds: ["papas-con-cheddar", "Nuggets"],
+    },
+  },
+
+  /* ====== KIDS ====== */
+  {
+    code: "KIDS_BURGER",
+    name: "Menú Infantil (burger)",
+    cost: 1000,
+    description: "Cheeseburger simple + papas chips.",
+    meta: { type: "kids", allowedIds: ["kids-cheese"] },
+  },
+  {
+    code: "KIDS_NUGGETS",
+    name: "Menú Infantil (nuggets)",
+    cost: 1400,
+    description: "Nuggets x6 + papas chips.",
+    meta: { type: "kids", allowedIds: ["kids-nuggets"] },
+  },
+
+  /* ====== COMBOS GENERALES (incluyen papas) ====== */
+  {
+    code: "COMBO_SIMPLE_ANY",
+    name: "Combo Simple (cualquiera)",
+    cost: 1600,
+    description: "Cualquier burger simple con papas.",
+    meta: {
+      type: "combo",
+      patties: 1,
+      allowedIds: [
+        "cheese-simple",
+        "doblecheese-simple",
+        "spacy-simple",
+        "especial-cuarto-libra",
+      ],
+    },
+  },
+  {
+    code: "COMBO_DOUBLE_ANY",
+    name: "Combo Doble (cualquiera)",
+    cost: 2000,
+    description: "Cualquier burger doble con papas.",
+    meta: {
+      type: "combo",
+      patties: 2,
+      allowedIds: [
+        "cheese-doble",
+        "doblecheese-doble",
+        "spacy-doble",
+        "especial-okhaoma", // es doble
+        "especial-mega-bacone", // es doble
+      ],
+    },
+  },
+  {
+    code: "COMBO_TRIPLE_ANY",
+    name: "Combo Triple (cualquiera)",
+    cost: 2400,
+    description: "Cualquier burger triple con papas.",
+    meta: {
+      type: "combo",
+      patties: 3,
+      allowedIds: ["cheese-triple", "doblecheese-triple", "spacy-triple"],
+    },
+  },
+
+  /* ====== COMBOS + EXTRA ====== */
+  {
+    code: "COMBO_ANY_PLUS_SIDE",
+    name: "Combo + Guarnición",
+    cost: 2600,
+    description: "Cualquier combo más una guarnición básica.",
+    meta: { type: "bundle", side: "basic" },
+  },
+
+  /* ====== ESPECIALES PUNTUALES ====== */
+  {
+    code: "SPECIAL_OKHAOMA_COMBO",
+    name: "Okhaoma (combo)",
+    cost: 2200,
+    description: "Doble con cebolla a la parrilla + papas.",
+    meta: { type: "special", allowedIds: ["especial-okhaoma"] },
+  },
+  {
+    code: "SPECIAL_MEGA_BACONE_COMBO",
+    name: "Mega Bacone (combo)",
+    cost: 2300,
+    description: "Doble con bacon crocante + papas.",
+    meta: { type: "special", allowedIds: ["especial-mega-bacone"] },
+  },
+  {
+    code: "SPECIAL_QUARTER_LIBRA_COMBO",
+    name: "1/4 de libra (combo)",
+    cost: 1800,
+    description: "Homenaje 1/4 lb + papas.",
+    meta: { type: "special", allowedIds: ["especial-cuarto-libra"] },
+  },
+];
 const getReward = (code: string) => REWARDS.find((r) => r.code === code);
 
 // POST /rewards/purchase
