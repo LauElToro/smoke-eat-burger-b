@@ -5,10 +5,22 @@ import { requireAuth, requireAdmin } from "../middleware/authJwt.js";
 
 export const rewardsRouter = Router();
 
-const POINTS_PER_10K = Number(process.env.POINTS_PER_10K || 100);
+/**
+ * REGLA DE CONVERSIÓN
+ * $10.000 => 600 pts  =>  0.06 pts / peso  =>  0.0006 pts / centavo
+ * Usamos micro-puntos (1 punto = 10.000 micro) para evitar coma flotante:
+ *   micro por centavo = (POINTS_PER_10K / 10.000 pesos) * (1 peso / 100 centavos) * 10.000 micro/pto
+ *                     = POINTS_PER_10K / 100
+ * Con 600 => 6 micro por centavo.
+ */
+const POINTS_PER_10K = Number(process.env.POINTS_PER_10K || 600); // 👈 default 600
 const REFERRAL_BONUS = Number(process.env.REFERRAL_BONUS || 50);
 
-// Catálogo mínimo para el test
+const MICRO_DEN = 10_000;                     // 10.000 micro = 1 punto
+const MICRO_PER_CENT = Math.round(POINTS_PER_10K / 100); // 600/100 = 6
+const CENTS_PER_10K_PESOS = 10_000 * 100;     // $10.000 en centavos (1.000.000)
+
+/** Catálogo mínimo para el test */
 type Reward = { code: string; name: string; cost: number; description?: string; meta?: any };
 
 export const REWARDS: Reward[] = [
@@ -79,8 +91,8 @@ export const REWARDS: Reward[] = [
         "cheese-doble",
         "doblecheese-doble",
         "spacy-doble",
-        "especial-okhaoma", // es doble
-        "especial-mega-bacone", // es doble
+        "especial-okhaoma",
+        "especial-mega-bacone",
       ],
     },
   },
@@ -128,9 +140,12 @@ export const REWARDS: Reward[] = [
     meta: { type: "special", allowedIds: ["especial-cuarto-libra"] },
   },
 ];
+
 const getReward = (code: string) => REWARDS.find((r) => r.code === code);
 
-// POST /rewards/purchase
+/* ============================
+   POST /rewards/purchase
+   ============================ */
 rewardsRouter.post("/purchase", requireAuth, async (req: Request, res: Response) => {
   const userId = (req as any).userId as string;
   const totalCents = Number(req.body?.totalCents || 0);
@@ -145,7 +160,7 @@ rewardsRouter.post("/purchase", requireAuth, async (req: Request, res: Response)
   try {
     await conn.beginTransaction();
 
-    // idempotencia (si mandás idempotencyKey)
+    // Idempotencia (si mandás idempotencyKey)
     if (idemp) {
       const [dup] = await conn.query<RowDataPacket[]>(
         `SELECT COUNT(*) AS c
@@ -161,34 +176,79 @@ rewardsRouter.post("/purchase", requireAuth, async (req: Request, res: Response)
       }
     }
 
+    // Tomamos usuario con lock
     const [rows] = await conn.query<RowDataPacket[]>(
-      "SELECT id, points, points_remainder_cents, referred_by_id FROM users WHERE id = ? FOR UPDATE",
+      `SELECT id, points,
+              points_remainder_cents,         -- resto de gasto hacia $10.000 (para UI)
+              points_micro_remainder,         -- resto de micro-puntos (para precisión)
+              referred_by_id
+         FROM users
+        WHERE id = ?
+        FOR UPDATE`,
       [userId]
     );
     if (rows.length === 0) {
       await conn.rollback();
       return res.status(404).json({ error: "user_not_found" });
     }
-    const u = rows[0] as any;
+    const u: any = rows[0];
 
-    const carry = Number(u.points_remainder_cents || 0);
-    const available = carry + totalCents;
-    const blocks = Math.floor(available / 10000);
-    const gainedPoints = blocks * POINTS_PER_10K;
-    const newRemainder = available % 10000;
+    // === Precisión de puntos (micro) ===
+    // Fallback: si no existe la columna, aproximamos desde remainder_cents.
+    const microCarryExisting =
+      u.points_micro_remainder != null
+        ? Number(u.points_micro_remainder)
+        : Math.max(0, Math.floor(Number(u.points_remainder_cents || 0) * (POINTS_PER_10K / 100)));
 
+    const rawMicro = microCarryExisting + totalCents * MICRO_PER_CENT; // entero
+    const gainedPoints = Math.floor(rawMicro / MICRO_DEN);
+    const microAfter = rawMicro % MICRO_DEN;
+
+    // === Resto de gasto hacia los próximos $10.000 (para “progreso”) ===
+    const spendCarryBefore = Math.max(0, Number(u.points_remainder_cents || 0));
+    const spendCarryAfter = (spendCarryBefore + totalCents) % CENTS_PER_10K_PESOS;
+
+    // Actualizamos usuario
     await conn.query<ResultSetHeader>(
-      "UPDATE users SET points = points + ?, points_remainder_cents = ?, updated_at = NOW() WHERE id = ?",
-      [gainedPoints, newRemainder, userId]
+      `UPDATE users
+          SET points = points + ?,
+              points_micro_remainder = ?,        -- precisión puntos
+              points_remainder_cents = ?,        -- progreso $10.000
+              updated_at = NOW()
+        WHERE id = ?`,
+      [gainedPoints, microAfter, spendCarryAfter, userId]
     );
 
+    // Registramos evento
     await conn.query<ResultSetHeader>(
-      "INSERT INTO reward_events (id, user_id, kind, points, meta, created_at) " +
-        "VALUES (UUID(), ?, 'purchase', ?, JSON_OBJECT('totalCents', ?, 'blocks', ?, 'carryBefore', ?, 'paymentMethod', ?, 'idempotencyKey', ?), NOW())",
-      [userId, gainedPoints, totalCents, blocks, carry, paymentMethod || null, idemp || null]
+      `INSERT INTO reward_events (id, user_id, kind, points, meta, created_at)
+       VALUES (UUID(), ?, 'purchase', ?, JSON_OBJECT(
+         'totalCents', ?, 
+         'pointsPer10k', ?, 
+         'microPerCent', ?, 
+         'microBefore', ?, 
+         'microAfter', ?, 
+         'spendCarryBefore', ?, 
+         'spendCarryAfter', ?, 
+         'paymentMethod', ?, 
+         'idempotencyKey', ?
+       ), NOW())`,
+      [
+        userId,
+        gainedPoints,
+        totalCents,
+        POINTS_PER_10K,
+        MICRO_PER_CENT,
+        microCarryExisting,
+        microAfter,
+        spendCarryBefore,
+        spendCarryAfter,
+        paymentMethod || null,
+        idemp || null,
+      ]
     );
 
-    // bono de referido en la primera compra del referido
+    // Bono de referido en la 1ª compra del referido
     if (u.referred_by_id) {
       const [pc] = await conn.query<RowDataPacket[]>(
         "SELECT COUNT(*) AS c FROM reward_events WHERE user_id = ? AND kind = 'purchase'",
@@ -201,8 +261,8 @@ rewardsRouter.post("/purchase", requireAuth, async (req: Request, res: Response)
           [REFERRAL_BONUS, u.referred_by_id]
         );
         await conn.query<ResultSetHeader>(
-          "INSERT INTO reward_events (id, user_id, kind, points, meta, created_at) " +
-            "VALUES (UUID(), ?, 'referral_bonus', ?, JSON_OBJECT('referredUserId', ?), NOW())",
+          `INSERT INTO reward_events (id, user_id, kind, points, meta, created_at)
+           VALUES (UUID(), ?, 'referral_bonus', ?, JSON_OBJECT('referredUserId', ?), NOW())`,
           [u.referred_by_id, REFERRAL_BONUS, userId]
         );
       }
@@ -211,8 +271,9 @@ rewardsRouter.post("/purchase", requireAuth, async (req: Request, res: Response)
     await conn.commit();
     return res.status(200).json({
       ok: true,
-      pointsAwarded: gainedPoints,
-      remainderCents: newRemainder,
+      pointsAwarded: gainedPoints,               // p.ej. $3.950 => 237
+      pointsMicroRemainderAfter: microAfter,     // para precisión futura
+      remainderCents: spendCarryAfter,           // para “faltan $… para +600”
     });
   } catch (err) {
     await conn.rollback();
@@ -223,7 +284,9 @@ rewardsRouter.post("/purchase", requireAuth, async (req: Request, res: Response)
   }
 });
 
-// POST /rewards/redeem
+/* ============================
+   POST /rewards/redeem
+   ============================ */
 rewardsRouter.post("/redeem", requireAuth, async (req: Request, res: Response) => {
   const userId = (req as any).userId as string;
   const rewardCode = String(req.body?.rewardCode || "");
@@ -258,19 +321,19 @@ rewardsRouter.post("/redeem", requireAuth, async (req: Request, res: Response) =
     );
 
     await conn.query<ResultSetHeader>(
-      "INSERT INTO reward_events (id, user_id, kind, points, meta, created_at) " +
-        "VALUES (UUID(), ?, 'redeem', ?, JSON_OBJECT('rewardCode', ?), NOW())",
+      `INSERT INTO reward_events (id, user_id, kind, points, meta, created_at)
+       VALUES (UUID(), ?, 'redeem', ?, JSON_OBJECT('rewardCode', ?), NOW())`,
       [userId, -reward.cost, reward.code]
     );
 
     await conn.query<ResultSetHeader>(
-      "INSERT INTO reward_redemptions (id, user_id, reward_code, points_cost, status, voucher_code, created_at, updated_at) " +
-        "VALUES (UUID(), ?, ?, ?, ?, ?, NOW(), NOW())",
+      `INSERT INTO reward_redemptions
+        (id, user_id, reward_code, points_cost, status, voucher_code, created_at, updated_at)
+       VALUES (UUID(), ?, ?, ?, ?, ?, NOW(), NOW())`,
       [userId, reward.code, reward.cost, status, voucher]
     );
 
     await conn.commit();
-    // ✅ el test espera que venga status PENDING
     return res.status(200).json({
       ok: true,
       voucherCode: voucher,
@@ -285,10 +348,17 @@ rewardsRouter.post("/redeem", requireAuth, async (req: Request, res: Response) =
     conn.release();
   }
 });
+
+/* ============================
+   GET /rewards/catalog
+   ============================ */
 rewardsRouter.get("/catalog", requireAuth, async (_req: Request, res: Response) => {
   return res.status(200).json({ rewards: REWARDS });
 });
-// GET /rewards/redemptions (admin)
+
+/* ============================
+   GET /rewards/redemptions (admin)
+   ============================ */
 rewardsRouter.get("/redemptions", requireAdmin, async (_req: Request, res: Response) => {
   try {
     const [rows] = await pool.query<RowDataPacket[]>(
