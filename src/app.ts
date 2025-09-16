@@ -3,14 +3,14 @@ import express from "express";
 import helmet from "helmet";
 import cors from "cors";
 import rateLimit from "express-rate-limit";
-import { config } from "./config";
-import { logRequests, logErrors } from "./middleware/logRequests";
-import authRoutes from "./routes/auth";
-import usersRoutes from "./routes/users";
+import { logRequests, logErrors } from "./middleware/logRequests.js";
+import authRoutes from "./routes/auth.js";
+import usersRoutes from "./routes/users.js";
+import rewardsRoutes from "./routes/rewards.js";
 
 const app = express();
 
-// Requerido en Render/Cloudflare para que rate-limit identifique bien IP
+// Requerido en Render/Cloudflare para IP real
 app.set("trust proxy", 1);
 
 app.use(helmet({
@@ -27,9 +27,11 @@ app.use(helmet({
 app.use(cors({ origin: "*" }));
 app.use(express.json());
 
+// En test, subimos el límite para evitar falsos positivos
+const isTest = process.env.NODE_ENV === "test";
 app.use(rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 300,
+  max: isTest ? 10_000 : 300,
   standardHeaders: true,
   legacyHeaders: false,
   validate: { trustProxy: true },
@@ -41,11 +43,9 @@ app.get("/", (_req, res) => res.send("API ok"));
 
 app.use("/auth", authRoutes);
 app.use("/users", usersRoutes);
+app.use("/rewards", rewardsRoutes);
 
 // Siempre al final
 app.use(logErrors);
 
-const port = config.port;
-app.listen(port, () => {
-  console.log(`API ready on :${port}`);
-});
+export default app;

@@ -1,31 +1,23 @@
 import { Router } from "express";
-import { requireAuth, requireRole } from "../middleware/auth";
+import { requireAuth } from "../middleware/authJwt";
 import { q } from "../db";
-import { z } from "zod";
-import { validate } from "../middleware/validate";
-
 
 const router = Router();
 
-
 router.get("/me", requireAuth, async (req, res) => {
-  const uid = (req as any).user.id as string;
-  const rows = await q<{id:string,email:string,role:'USER'|'ADMIN',points:number,referral_code:string,email_verified:number}>(
-    "SELECT id,email,role,points,referral_code,email_verified FROM users WHERE id = ?", [uid]
-  );
-  const u = rows[0];
-  res.json({
-    user: u ? {
-      id: u.id,
-      email: u.email,
-      role: u.role,
-      points: u.points,
-      referralCode: u.referral_code,
-      emailVerified: !!u.email_verified
-    } : null
-  });
+  const userId = (req as any).user?.sub as string;
+  try {
+    const rows = await q<any>(
+      "SELECT id, email, role, points, referral_code AS referralCode FROM users WHERE id = ?",
+      [userId]
+    );
+    const user = rows[0];
+    if (!user) return res.status(404).json({ error: "not_found" });
+    return res.json({ user });
+  } catch (err) {
+    console.error("[users/me] fail:", err);
+    return res.status(500).json({ error: "internal_error" });
+  }
 });
-
-
 
 export default router;

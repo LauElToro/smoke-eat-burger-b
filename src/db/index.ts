@@ -1,5 +1,5 @@
 import mysql from "mysql2/promise";
-import { config } from "./config";
+import { config } from "../config";
 
 export const pool = mysql.createPool({
   host: config.db.host,
@@ -8,11 +8,8 @@ export const pool = mysql.createPool({
   password: config.db.password,
   database: config.db.database,
   connectionLimit: config.db.connectionLimit,
-  waitForConnections: true,
-  connectTimeout: 20_000,
-  queueLimit: 0,
-  // SSL opcional según .env
-  ssl: config.db.ssl || undefined,
+  // Hostinger o PlanetScale suelen requerir SSL
+  ssl: { rejectUnauthorized: false },
 });
 
 export async function q<T = any>(sql: string, params: any[] = []): Promise<T[]> {
