@@ -17,6 +17,9 @@ const getReward = (code: string) => REWARDS.find((r) => r.code === code);
 rewardsRouter.post("/purchase", requireAuth, async (req: Request, res: Response) => {
   const userId = (req as any).userId as string;
   const totalCents = Number(req.body?.totalCents || 0);
+  const idemp = (req.body?.idempotencyKey || "").toString().slice(0, 64);
+  const paymentMethod = (req.body?.paymentMethod || "").toString(); // opcional, para auditar
+
   if (!Number.isFinite(totalCents) || totalCents <= 0) {
     return res.status(400).json({ error: "invalid_total" });
   }
@@ -24,6 +27,22 @@ rewardsRouter.post("/purchase", requireAuth, async (req: Request, res: Response)
   const conn = await pool.getConnection();
   try {
     await conn.beginTransaction();
+
+    // idempotencia (si mandás idempotencyKey)
+    if (idemp) {
+      const [dup] = await conn.query<RowDataPacket[]>(
+        `SELECT COUNT(*) AS c
+           FROM reward_events
+          WHERE user_id = ?
+            AND kind = 'purchase'
+            AND JSON_EXTRACT(meta, '$.idempotencyKey') = ?`,
+        [userId, idemp]
+      );
+      if (Number((dup[0] as any).c || 0) > 0) {
+        await conn.rollback();
+        return res.status(200).json({ ok: true, duplicate: true });
+      }
+    }
 
     const [rows] = await conn.query<RowDataPacket[]>(
       "SELECT id, points, points_remainder_cents, referred_by_id FROM users WHERE id = ? FOR UPDATE",
@@ -48,11 +67,11 @@ rewardsRouter.post("/purchase", requireAuth, async (req: Request, res: Response)
 
     await conn.query<ResultSetHeader>(
       "INSERT INTO reward_events (id, user_id, kind, points, meta, created_at) " +
-        "VALUES (UUID(), ?, 'purchase', ?, JSON_OBJECT('totalCents', ?, 'blocks', ?, 'carryBefore', ?), NOW())",
-      [userId, gainedPoints, totalCents, blocks, carry]
+        "VALUES (UUID(), ?, 'purchase', ?, JSON_OBJECT('totalCents', ?, 'blocks', ?, 'carryBefore', ?, 'paymentMethod', ?, 'idempotencyKey', ?), NOW())",
+      [userId, gainedPoints, totalCents, blocks, carry, paymentMethod || null, idemp || null]
     );
 
-    // bono de referido en la *primera* compra del referido
+    // bono de referido en la primera compra del referido
     if (u.referred_by_id) {
       const [pc] = await conn.query<RowDataPacket[]>(
         "SELECT COUNT(*) AS c FROM reward_events WHERE user_id = ? AND kind = 'purchase'",
@@ -149,7 +168,9 @@ rewardsRouter.post("/redeem", requireAuth, async (req: Request, res: Response) =
     conn.release();
   }
 });
-
+rewardsRouter.get("/catalog", requireAuth, async (_req: Request, res: Response) => {
+  return res.status(200).json({ rewards: REWARDS });
+});
 // GET /rewards/redemptions (admin)
 rewardsRouter.get("/redemptions", requireAdmin, async (_req: Request, res: Response) => {
   try {
