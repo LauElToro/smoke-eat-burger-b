@@ -27,7 +27,7 @@ if (hasSmtp) {
 
 const FROM =
   process.env.MAIL_FROM || `Smoke Eat Burger <no-reply@smokeeatburger.com>`;
-const APP_URL = process.env.APP_URL || "http://localhost:8080";
+const APP_URL = process.env.APP_URL || "smokeeatburger.com";
 
 type SendParams = {
   to: string;

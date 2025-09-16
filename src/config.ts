@@ -37,7 +37,7 @@ export const config = {
     secure: /^true$/i.test(process.env.SMTP_SECURE || "true"),
     user: process.env.SMTP_USER || "",
     pass: process.env.SMTP_PASS || "",
-    from: process.env.MAIL_FROM || "Smoke Eat Burger <no-reply@localhost>",
+    from: process.env.MAIL_FROM || "Smoke Eat Burger <info@smokeeatburger.com>",
   },
   emailDryRun: /^(true|1)$/i.test(process.env.EMAIL_DRY_RUN || ""),
   signupEmailCheck: (process.env.SIGNUP_EMAIL_CHECK || "strict") as "strict"|"soft"|"off",

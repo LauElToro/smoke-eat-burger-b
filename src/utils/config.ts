@@ -9,7 +9,7 @@ function envBool(name: string, def = false) {
 export const config = {
   app: {
     port: Number(process.env.PORT || 5175),
-    baseUrl: process.env.BASE_URL || "http://localhost:5175",
+    baseUrl: process.env.BASE_URL,
   },
   mysql: {
     host: process.env.MYSQL_HOST!,
@@ -34,7 +34,7 @@ export const config = {
     check: (process.env.SIGNUP_EMAIL_CHECK || "off").toLowerCase() as "on" | "off",
   },
   mail: {
-    from: process.env.MAIL_FROM || "Smoke Eat Burger <no-reply@localhost>",
+    from: process.env.MAIL_FROM || "Smoke Eat Burger <info@smokeeatburger.com>",
     dryRun: envBool("MAILER_DRY_RUN") || envBool("EMAIL_DRY_RUN"),
     mxCheck: envBool("MAIL_MX_CHECK", false),
     driver: (process.env.MAILER_DRIVER || "smtp") as "smtp" | "log",
