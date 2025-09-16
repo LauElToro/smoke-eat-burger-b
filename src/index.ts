@@ -1,51 +1,6 @@
-import "dotenv/config";
-import express from "express";
-import helmet from "helmet";
-import cors from "cors";
-import rateLimit from "express-rate-limit";
-import { config } from "./config";
-import { logRequests, logErrors } from "./middleware/logRequests";
-import authRoutes from "./routes/auth";
-import usersRoutes from "./routes/users";
+import app from "./app";
 
-const app = express();
-
-// Requerido en Render/Cloudflare para que rate-limit identifique bien IP
-app.set("trust proxy", 1);
-
-app.use(helmet({
-  contentSecurityPolicy: {
-    useDefaults: true,
-    directives: {
-      "img-src": ["'self'", "data:"],
-      "style-src": ["'self'", "https:", "'unsafe-inline'"],
-      "script-src-attr": ["'none'"],
-    },
-  },
-}));
-
-app.use(cors({ origin: "*" }));
-app.use(express.json());
-
-app.use(rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 300,
-  standardHeaders: true,
-  legacyHeaders: false,
-  validate: { trustProxy: true },
-}));
-
-app.use(logRequests);
-
-app.get("/", (_req, res) => res.send("API ok"));
-
-app.use("/auth", authRoutes);
-app.use("/users", usersRoutes);
-
-// Siempre al final
-app.use(logErrors);
-
-const port = config.port;
+const port = Number(process.env.PORT || 5175);
 app.listen(port, () => {
-  console.log(`API ready on :${port}`);
+  console.log(`[server] listening on :${port}`);
 });
