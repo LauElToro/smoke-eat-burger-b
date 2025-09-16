@@ -13,12 +13,7 @@ export const rewardsRouter = Router();
  *                     = POINTS_PER_10K / 100
  * Con 600 => 6 micro por centavo.
  */
-const POINTS_PER_10K = Number(process.env.POINTS_PER_10K || 600); // 👈 default 600
-const REFERRAL_BONUS = Number(process.env.REFERRAL_BONUS || 50);
-
-const MICRO_DEN = 10_000;                     // 10.000 micro = 1 punto
-const MICRO_PER_CENT = Math.round(POINTS_PER_10K / 100); // 600/100 = 6
-const CENTS_PER_10K_PESOS = 10_000 * 100;     // $10.000 en centavos (1.000.000)
+const POINTS_PER_10K = Number(process.env.POINTS_PER_10K || 600);
 
 /** Catálogo mínimo para el test */
 type Reward = { code: string; name: string; cost: number; description?: string; meta?: any };
@@ -143,24 +138,27 @@ export const REWARDS: Reward[] = [
 
 const getReward = (code: string) => REWARDS.find((r) => r.code === code);
 
-/* ============================
-   POST /rewards/purchase
-   ============================ */
 rewardsRouter.post("/purchase", requireAuth, async (req: Request, res: Response) => {
   const userId = (req as any).userId as string;
   const totalCents = Number(req.body?.totalCents || 0);
   const idemp = (req.body?.idempotencyKey || "").toString().slice(0, 64);
-  const paymentMethod = (req.body?.paymentMethod || "").toString(); // opcional, para auditar
+  const paymentMethod = (req.body?.paymentMethod || "").toString();
 
   if (!Number.isFinite(totalCents) || totalCents <= 0) {
     return res.status(400).json({ error: "invalid_total" });
   }
 
+  // Config puntos ($10.000 => 600 pts)
+  const POINTS_PER_10K = Number(process.env.POINTS_PER_10K || 600);
+  const MICRO_DEN = 10_000;                            // 10.000 micro = 1 punto
+  const MICRO_PER_CENT = Math.round(POINTS_PER_10K / 100); // 600/100 = 6
+  const CENTS_PER_10K_PESOS = 10_000 * 100;            // $10.000 en centavos
+
   const conn = await pool.getConnection();
   try {
     await conn.beginTransaction();
 
-    // Idempotencia (si mandás idempotencyKey)
+    // Idempotencia
     if (idemp) {
       const [dup] = await conn.query<RowDataPacket[]>(
         `SELECT COUNT(*) AS c
@@ -176,27 +174,46 @@ rewardsRouter.post("/purchase", requireAuth, async (req: Request, res: Response)
       }
     }
 
-    // Tomamos usuario con lock
-    const [rows] = await conn.query<RowDataPacket[]>(
-      `SELECT id, points,
-              points_remainder_cents,         -- resto de gasto hacia $10.000 (para UI)
-              points_micro_remainder,         -- resto de micro-puntos (para precisión)
-              referred_by_id
-         FROM users
-        WHERE id = ?
-        FOR UPDATE`,
-      [userId]
-    );
-    if (rows.length === 0) {
-      await conn.rollback();
-      return res.status(404).json({ error: "user_not_found" });
-    }
-    const u: any = rows[0];
+    // Intentamos leer con points_micro_remainder; si no existe la columna, caemos a fallback
+    let hasMicroCol = true;
+    let u: any;
 
-    // === Precisión de puntos (micro) ===
-    // Fallback: si no existe la columna, aproximamos desde remainder_cents.
+    try {
+      const [rows] = await conn.query<RowDataPacket[]>(
+        `SELECT id, points, points_remainder_cents, points_micro_remainder, referred_by_id
+           FROM users
+          WHERE id = ?
+          FOR UPDATE`,
+        [userId]
+      );
+      if (rows.length === 0) {
+        await conn.rollback();
+        return res.status(404).json({ error: "user_not_found" });
+      }
+      u = rows[0];
+    } catch (e: any) {
+      if (e?.code === "ER_BAD_FIELD_ERROR") {
+        hasMicroCol = false;
+        const [rows] = await conn.query<RowDataPacket[]>(
+          `SELECT id, points, points_remainder_cents, referred_by_id
+             FROM users
+            WHERE id = ?
+            FOR UPDATE`,
+          [userId]
+        );
+        if (rows.length === 0) {
+          await conn.rollback();
+          return res.status(404).json({ error: "user_not_found" });
+        }
+        u = rows[0];
+      } else {
+        throw e;
+      }
+    }
+
+    // Precisión de puntos (micro) — fallback si no hay columna
     const microCarryExisting =
-      u.points_micro_remainder != null
+      hasMicroCol && u.points_micro_remainder != null
         ? Number(u.points_micro_remainder)
         : Math.max(0, Math.floor(Number(u.points_remainder_cents || 0) * (POINTS_PER_10K / 100)));
 
@@ -204,22 +221,34 @@ rewardsRouter.post("/purchase", requireAuth, async (req: Request, res: Response)
     const gainedPoints = Math.floor(rawMicro / MICRO_DEN);
     const microAfter = rawMicro % MICRO_DEN;
 
-    // === Resto de gasto hacia los próximos $10.000 (para “progreso”) ===
+    // Resto de gasto hacia los próximos $10.000 (para progreso visual en la UI)
     const spendCarryBefore = Math.max(0, Number(u.points_remainder_cents || 0));
     const spendCarryAfter = (spendCarryBefore + totalCents) % CENTS_PER_10K_PESOS;
 
-    // Actualizamos usuario
-    await conn.query<ResultSetHeader>(
-      `UPDATE users
-          SET points = points + ?,
-              points_micro_remainder = ?,        -- precisión puntos
-              points_remainder_cents = ?,        -- progreso $10.000
-              updated_at = NOW()
-        WHERE id = ?`,
-      [gainedPoints, microAfter, spendCarryAfter, userId]
-    );
+    // UPDATE condicionado por existencia de la columna
+    if (hasMicroCol) {
+      await conn.query<ResultSetHeader>(
+        `UPDATE users
+            SET points = points + ?,
+                points_micro_remainder = ?,
+                points_remainder_cents = ?,
+                updated_at = NOW()
+          WHERE id = ?`,
+        [gainedPoints, microAfter, spendCarryAfter, userId]
+      );
+    } else {
+      // sin columna: actualizamos puntos + remainder_cents (progreso), pero NO podemos persistir microAfter
+      await conn.query<ResultSetHeader>(
+        `UPDATE users
+            SET points = points + ?,
+                points_remainder_cents = ?,
+                updated_at = NOW()
+          WHERE id = ?`,
+        [gainedPoints, spendCarryAfter, userId]
+      );
+    }
 
-    // Registramos evento
+    // Evento de compra
     await conn.query<ResultSetHeader>(
       `INSERT INTO reward_events (id, user_id, kind, points, meta, created_at)
        VALUES (UUID(), ?, 'purchase', ?, JSON_OBJECT(
@@ -231,7 +260,8 @@ rewardsRouter.post("/purchase", requireAuth, async (req: Request, res: Response)
          'spendCarryBefore', ?, 
          'spendCarryAfter', ?, 
          'paymentMethod', ?, 
-         'idempotencyKey', ?
+         'idempotencyKey', ?,
+         'microColPresent', ?
        ), NOW())`,
       [
         userId,
@@ -245,10 +275,11 @@ rewardsRouter.post("/purchase", requireAuth, async (req: Request, res: Response)
         spendCarryAfter,
         paymentMethod || null,
         idemp || null,
+        hasMicroCol ? 1 : 0,
       ]
     );
 
-    // Bono de referido en la 1ª compra del referido
+    // Bono de referido en 1ª compra
     if (u.referred_by_id) {
       const [pc] = await conn.query<RowDataPacket[]>(
         "SELECT COUNT(*) AS c FROM reward_events WHERE user_id = ? AND kind = 'purchase'",
@@ -256,6 +287,7 @@ rewardsRouter.post("/purchase", requireAuth, async (req: Request, res: Response)
       );
       const purchasesSoFar = Number((pc[0] as any).c || 0);
       if (purchasesSoFar === 1) {
+        const REFERRAL_BONUS = Number(process.env.REFERRAL_BONUS || 50);
         await conn.query<ResultSetHeader>(
           "UPDATE users SET points = points + ?, updated_at = NOW() WHERE id = ?",
           [REFERRAL_BONUS, u.referred_by_id]
@@ -271,9 +303,10 @@ rewardsRouter.post("/purchase", requireAuth, async (req: Request, res: Response)
     await conn.commit();
     return res.status(200).json({
       ok: true,
-      pointsAwarded: gainedPoints,               // p.ej. $3.950 => 237
-      pointsMicroRemainderAfter: microAfter,     // para precisión futura
-      remainderCents: spendCarryAfter,           // para “faltan $… para +600”
+      pointsAwarded: gainedPoints,                 // p.ej. $3.950 => 237
+      pointsMicroRemainderAfter: microAfter,       // si no hay columna, igual lo devolvemos (no persiste)
+      remainderCents: spendCarryAfter,             // para “faltan $… para +600”
+      microColPresent: hasMicroCol ? 1 : 0,
     });
   } catch (err) {
     await conn.rollback();
@@ -283,7 +316,6 @@ rewardsRouter.post("/purchase", requireAuth, async (req: Request, res: Response)
     conn.release();
   }
 });
-
 /* ============================
    POST /rewards/redeem
    ============================ */
